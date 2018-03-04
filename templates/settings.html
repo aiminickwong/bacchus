@@ -11,7 +11,9 @@
                   
 				<div class="clearfix"></div>
 			</div>
+
 			<div class="x_content">
+				<form method="POST" class="post-form">
 				<table class="table table-striped jambo_table bulk_action table-hover table-bordered dt-responsive nowrap">
 					<thead>
                         <tr>                          
@@ -21,18 +23,31 @@
                         </tr>
                     </thead>
                     <tbody>
+                    	
                       	{% for setting in settings %}
-                      	<form method="POST" class="post-form">
+                      	
                       	{% csrf_token %}	                      
                         <tr>                     
                           <td>{{ setting.parameter }}</td>
                           
                           <td><input type="text" id="{{setting.parameter}}" name="{{setting.parameter}}" required="required" value="{{setting.value}}" class="form-control col-md-7 col-xs-12"></td>
-                        </tr>
-                        </form>
+                        </tr> 
+                        
                         {% endfor %}
+                              
                      </tbody>
                   </table>
+   				{% if settings_saved %}
+   				<table class="table">
+   					<thead>
+						<tr class="success">           
+                			<th>Settings saved.</th>
+						</tr>
+					</thead>
+				</table>
+				{% endif %}
+                  <button type="submit" class="save btn btn-danger">Save</button>
+                  </form>
 
 			</div>
 			

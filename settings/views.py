@@ -11,15 +11,15 @@ from models import *
 
 @login_required(login_url="/settings/")
 def settings(request):
+    settings_saved = False
     if request.method == "POST":
-        manager_id = request.POST.get('manager_id')
-        if request.POST.get('delete_manager_'+manager_id) == "delete":
-            manager = Manager.objects.get(id=manager_id)
-            manager.delete()
-            return redirect('/managers/')
-        else:
-            return redirect('/edit_manager/'+request.POST.get('manager_id'))
-    else:
         settings = Settings.objects.all()
-        return render(request,'settings.html',{'settings': settings })
+        for setting in settings:
+            setting.value = request.POST[setting.parameter]
+            setting.save()
+        settings_saved = True
+        
+            
+    settings = Settings.objects.all()
+    return render(request,'settings.html',{'settings': settings, 'settings_saved': settings_saved })
 

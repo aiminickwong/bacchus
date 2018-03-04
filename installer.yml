@@ -27,6 +27,11 @@
         name: rabbitmq-server
         state: present
 
+    - name: Install NGINX
+      yum:
+        name: nginx
+        state: present
+
     - name: Upgrade pip using pip itself
       command: pip install --upgrade pip
 
@@ -89,6 +94,7 @@
         priv: 'bacchus.*:ALL,GRANT'
         state: present
 
+
     - name: Add RabbitMQ Vhost
       rabbitmq_vhost:
         name: bacchus
@@ -142,6 +148,47 @@
       become: true
       become_user: bacchus
 
+    - name: NGINX settings
+      file:
+        path: "/etc/nginx/conf.d/bacchus.conf"
+        state: touch
+
+    - name: NGINX settings
+      blockinfile:
+        path: "/etc/nginx/conf.d/bacchus.conf"
+        block: |
+          server {
+              server_name '{{bacchus_hostname}}';
+              listen {{nginx_ssl_port}} ssl default deferred;
+              ssl_certificate /etc/ssl/certs/bacchus-selfsigned.crt;
+              ssl_certificate_key /etc/ssl/private/bacchus-selfsigned.key;
+              ssl_ciphers ECDH+AESGCM:ECDH+AES256:ECDH+AES128:DH+3DES:!ADH:!AECDH:!MD5;
+              ssl_prefer_server_ciphers on;
+              ssl_protocols TLSv1 TLSv1.1 TLSv1.2;
+              location / {
+                    	proxy_pass_header Authorization;
+                        proxy_pass http://127.0.0.1:{{bacchus_bind_port}};
+                        proxy_set_header Host $host;
+                        proxy_set_header X-Real-IP $remote_addr;
+                        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                        proxy_http_version 1.1;
+                        proxy_set_header Connection "";
+                        proxy_buffering off;
+                        client_max_body_size 0;
+                        proxy_read_timeout 36000s;
+                        proxy_redirect off;
+              }
+          }
+
+    - name: Create certificate directories
+      file:
+        path: "/etc/ssl/private"
+        state: directory
+        mode: 0755
+
+    - name: Generate SSL self-signed certificate
+      command: openssl req -x509 -nodes -days 3650 -newkey rsa:4096 -keyout /etc/ssl/private/bacchus-selfsigned.key -out /etc/ssl/certs/bacchus-selfsigned.crt -subj "/C=TR/ST=Turkey/L=Istanbul/O=OpenBacchus/CN={{bacchus_hostname}}"
+
     - name: Database settings
       blockinfile:
         path: "{{ bacchus_base_path }}/bacchus/settings.py"
@@ -158,6 +205,13 @@
           }
           CELERY_BROKER_URL = 'amqp://{{ bacchus_mq_user }}:{{ bacchus_mq_pass }}@localhost:5672/bacchus'
           BEAT_RESTART_SCRIPT = "{{ bacchus_base_path }}/tools/restart_beat.sh"
+          SESSION_EXPIRE_AT_BROWSER_CLOSE = True
+          EMAIL_HOST = "{{ email_host }}"
+          EMAIL_HOST_USER = "{{ email_host_user }}"
+          EMAIL_HOST_PASSWORD = "{{ email_host_password }}"
+          EMAIL_PORT = {{ email_port }}
+          EMAIL_USE_TLS = {{ email_use_tls }}
+
 
     - name: Open Bacchus preflight check
       command: python manage.py check
@@ -348,7 +402,7 @@
       blockinfile:
         path: "{{ bacchus_base_path }}/tools/start_server.sh"
         block: |
-          nohup python {{ bacchus_base_path }}/manage.py runserver {{bind_address}}:{{bind_port}} >{{ bacchus_base_path }}/logs/server.log 2>&1 & 
+          nohup python {{ bacchus_base_path }}/manage.py runserver 127.0.0.1:{{bacchus_bind_port}} >{{ bacchus_base_path }}/logs/server.log 2>&1 & 
           echo $! > {{ bacchus_base_path }}/tools/server.pid
 
     - name: Server stop script
@@ -432,13 +486,54 @@
           {{ bacchus_base_path }}/tools/status_beat.sh
           {{ bacchus_base_path }}/tools/status_flower.sh
           {{ bacchus_base_path }}/tools/status_server.sh
-          
+
+    - name: Create systemd service file
+      file:
+        path: "/etc/systemd/system/bacchus.service"
+        state: touch
+        mode: 0755
+
+    - name: Install systemd service
+      blockinfile:
+        path: "/etc/systemd/system/bacchus.service"
+        block: |
+          [Unit]
+          Description=Bacchus Service
+          After=network.target
+          [Service]
+          Type=oneshot
+          User=bacchus
+          ExecStart=/bin/bash {{ bacchus_base_path }}/tools/start_bacchus.sh
+          ExecStop=/bin/bash {{ bacchus_base_path }}/tools/stop_bacchus.sh
+          RemainAfterExit=yes
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Enable Bacchus Service
+      command: "systemctl daemon-reload"
+      
+    - name: Enable Bacchus Service
+      command: "systemctl enable bacchus"
+    
+    - name: Enable NGINX
+      command: "systemctl enable nginx"
+
     - debug:
         msg: "Bacchus installation finished"
-
-
+        
+    - name: Log the successful installation
+      uri:
+        url: "https://openbacchus.com/install"
+        
     - name: Add Bacchus admin account
       command: python manage.py shell -c "from django.contrib.auth.models import User;  User.objects.filter(username='{{ admin_username }}').delete(); User.objects.create_superuser('{{ admin_username }}', '{{ admin_email }}', '{{ admin_password }}')" 
+      args:
+        chdir: "{{ bacchus_base_path }}"
+      become: true
+      become_user: bacchus
+
+    - name: E-mail settings
+      command: python manage.py shell -c "from settings.models import Settings; Settings.objects.get_or_create(parameter='mail_to', value='{{ admin_email }}')"
       args:
         chdir: "{{ bacchus_base_path }}"
       become: true
@@ -451,9 +546,23 @@
       become: true
       become_user: bacchus
 
+    - name: Start NGINX
+      command: "systemctl restart nginx"
+
     - name: Start Bacchus Web Console
-      shell: "{{ bacchus_base_path }}/tools/start_bacchus.sh"
-      become: true
-      become_user: bacchus
+      command: "systemctl restart bacchus"
+      
+    - debug:
+        msg: 
+          - "Installation finished. You can access your Bacchus now." 
+          - "URL: https://{{bacchus_hostname}}:{{nginx_ssl_port}}"
+          - "username: admin"
+          - "password: {{admin_password}}"
+          - "--------------------------------------------------------"
+          - "Thank you for using Bacchus. Please donate if you liked it."
+          - "https://www.patreon.com/openbacchus"
+      
+
+
 
 
